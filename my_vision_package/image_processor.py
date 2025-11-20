@@ -9,6 +9,14 @@ class ImageProcessor(Node):
     def __init__(self):
         super().__init__('image_processor')
 
+        self.declare_parameters(
+            namespace='', 
+            parameters=[
+            ('h_upper', 140),
+            ('h_lower', 95),
+            ('s_lower', 90)])
+           
+
         self.bridge = CvBridge()
         self.subscription = self.create_subscription(
             CompressedImage,
@@ -19,15 +27,20 @@ class ImageProcessor(Node):
     
     def listener_callback(self, msg):
         try:
+            
+            h_upper = self.get_parameter('h_upper').value
+            h_lower = self.get_parameter('h_lower').value
+            s_lower = self.get_parameter('s_lower').value
+
             np_arr = np.frombuffer(msg.data, np.uint8)              # Converting incoming bytes into np.array object for cv2
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)       # Converting one dimmensional array into multidimensional
             height, width, channels = cv_image.shape                # Collecting data about image processed by cv_bridge
             hsv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)   # Converting to HSV because it separates color form brightness, making detection more robust to lighting changes.
 
-            lower_blue = np.array([95, 80, 50])                     # Lower limit for blue color range
-            upper_blue = np.array([140, 255, 255])                  # Upper limit for blue color range
+            lower_ = np.array([h_lower, s_lower, 50])               # Lower limit for blue color range
+            upper_ = np.array([h_upper, 255, 255])                  # Upper limit for blue color range
 
-            mask = cv2.inRange(hsv_image, lower_blue, upper_blue)   # Generating black-white mask, where blue = white  
+            mask = cv2.inRange(hsv_image, lower_, upper_)           # Generating black-white mask, where defined color = white and other = black
             masked_image = cv2.bitwise_and(cv_image, cv_image, mask= mask)
 
             white_pixels = cv2.countNonZero(mask)
@@ -42,7 +55,6 @@ class ImageProcessor(Node):
                 output_msg.data = encoded_jpg.tobytes()
 
                 self.publisher_.publish(output_msg)
-
 
         except Exception as e:
             self.get_logger().info(f'Processing ERROR: {e}')
