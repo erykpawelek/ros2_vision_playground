@@ -4,7 +4,7 @@ A custom ROS 2 package for real-time computer vision processing, designed for **
 
 This node subscribes to a camera stream, performs color detection using HSV thresholding, identifies object contours, calculates the centroid (center of mass), and visualizes the tracking error for potential robot control.
 
-## ✨ Features
+## Features
 
 * **Efficient Data Handling:** Uses `CompressedImage` transport to minimize Wi-Fi bandwidth usage and reduce latency.
 * **Color Tracking:** HSV-based color filtration (default: blue/cyan range).
