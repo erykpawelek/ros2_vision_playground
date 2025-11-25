@@ -22,7 +22,8 @@ class ImageProcessor(Node):
             parameters=[
             ('h_upper', 140),
             ('h_lower', 95),
-            ('s_lower', 90)])
+            ('s_lower', 90),
+            ('mode', 'color_rec')])
            
         # --- RO2 objects declaration and image format adjustment ---
         self.bridge = CvBridge()
@@ -36,51 +37,26 @@ class ImageProcessor(Node):
 
     def listener_callback(self, msg: CompressedImage):
         """
-        'listener_callback' is core function which is conected to raw image subscription. It is responsible for all image processing 
-        as well as for publishing results
+        This function is core function which manages all processing modes, with subscription to raw compressed image as well as for publishing results
         """
         try:
-            h_upper = self.get_parameter('h_upper').value           #Parameters mapping
-            h_lower = self.get_parameter('h_lower').value
-            s_lower = self.get_parameter('s_lower').value
-
+           
             np_arr = np.frombuffer(msg.data, np.uint8)              # Converting incoming bytes into np.array object for cv2
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)       # Converting one dimmensional array into multidimensional
-            height, width, channels = cv_image.shape                # Collecting data about image processed by cv_bridge
-            hsv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)   # Converting to HSV because it separates color form brightness, making detection more robust to lighting changes.
-            center_screen = [width//2, height//2]
 
-            lower_ = np.array([h_lower, s_lower, 50])               # Lower limit for defined color 
-            upper_ = np.array([h_upper, 255, 255])                  # Upper limit for defined color
-            mask = cv2.inRange(hsv_image, lower_, upper_)           # Generating black-white mask, where defined color = white and other = black
-            masked_image = cv2.bitwise_and(cv_image, cv_image, mask= mask)      # Folding raw image with mask
+            mode =  self.get_parameter('mode').value
 
-            # Contours recognition along with object mass center solving
-            contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-            if len(contours) > 0:
-                biggest_contour = max(contours, key=cv2.contourArea)# We obtain largest contour to filter noises or samaller objects
-                moments = cv2.moments(biggest_contour)              # Calculating moments of our contour
-                if moments['m00'] > 0:
-                    cx = int(moments['m10']/moments['m00'])         # From static moments we calculate centre of mass
-                    cy = int(moments['m01']/moments['m00'])
-                else: 
-                    cx, cy = 0, 0                                   # Skip the frame
-
-                center_object = [cx, cy]
-                cv2.circle(masked_image, (cx,cy), 7, (0, 0, 255), -1)  
-                cv2.drawContours(masked_image, [biggest_contour], -1, (0, 255, 0), 2)
-
-                centre_error_x = center_screen[0] - cx              # Calculating error between screen center and obj center
-                centre_error_y = center_screen[1] - cy
-                self.get_logger().info(f'\nX error: {centre_error_x},  Y error" {centre_error_y}')
-                cv2.line(masked_image, center_screen, center_object, (255, 255, 255), 2)
-
-            white_pixels = cv2.countNonZero(mask)                               # Counting pixels containing detected color
-            self.get_logger().info(f'I can see {white_pixels} defined clor pixels.')    
-
+            # Switching between modes
+            if mode == 'color_rec':
+                processed_image = self.color_rec(cv_image)
+            elif mode == 'neural_net_mediapipe':
+                processed_image = self.neural_net_mediapipe(cv_image)
+            else:
+                self.get_logger().info('Invalid mode! \n Please choose between: \n color_rec\n neural_net_mediapipe')
+                processed_image = cv_image
+                    
             # Compressing precessed image along with preparing packages for publishing
-            success, encoded_jpg = cv2.imencode('.jpg', masked_image, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
-
+            success, encoded_jpg = cv2.imencode('.jpg', processed_image, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
             if success:
                 output_msg = CompressedImage()
                 output_msg.header = msg.header
@@ -91,6 +67,57 @@ class ImageProcessor(Node):
 
         except Exception as e:
             self.get_logger().info(f'Processing ERROR: {e}')
+
+    def color_rec(self, cv_image):
+        """
+        This function is responsible for processing image and object detection using color recognition and open cv2 library.
+        """
+        h_upper = self.get_parameter('h_upper').value           #Parameters mapping
+        h_lower = self.get_parameter('h_lower').value
+        s_lower = self.get_parameter('s_lower').value
+
+        height, width, channels = cv_image.shape                # Collecting data about image processed by cv_bridge
+        hsv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)   # Converting to HSV because it separates color form brightness, making detection more robust to lighting changes.
+        center_screen = [width//2, height//2]
+
+        lower_ = np.array([h_lower, s_lower, 50])               # Lower limit for defined color 
+        upper_ = np.array([h_upper, 255, 255])                  # Upper limit for defined color
+        mask = cv2.inRange(hsv_image, lower_, upper_)           # Generating black-white mask, where defined color = white and other = black
+        masked_image = cv2.bitwise_and(cv_image, cv_image, mask= mask)      # Folding raw image with mask
+
+        # Contours recognition along with object mass center solving
+        contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+        if len(contours) > 0:
+            biggest_contour = max(contours, key=cv2.contourArea)# We obtain largest contour to filter noises or samaller objects
+            moments = cv2.moments(biggest_contour)              # Calculating moments of our contour
+            if moments['m00'] > 0:
+                cx = int(moments['m10']/moments['m00'])         # From static moments we calculate centre of mass
+                cy = int(moments['m01']/moments['m00'])
+            else: 
+                cx, cy = 0, 0                                   # Skip the frame
+
+            center_object = [cx, cy]
+            cv2.circle(masked_image, (cx,cy), 7, (0, 0, 255), -1)  
+            cv2.drawContours(masked_image, [biggest_contour], -1, (0, 255, 0), 2)
+
+            centre_error_x = center_screen[0] - cx              # Calculating error between screen center and obj center
+            centre_error_y = center_screen[1] - cy
+            self.get_logger().info(f'\nX error: {centre_error_x},  Y error" {centre_error_y}')
+            cv2.line(masked_image, center_screen, center_object, (255, 255, 255), 2)
+
+        white_pixels = cv2.countNonZero(mask)                   # Counting pixels containing detected color
+        self.get_logger().info(f'I can see {white_pixels} defined clor pixels.')    
+
+        return masked_image
+    
+    def neural_net_mediapipe(self, cv_image):
+        """
+        
+        """
+
+        
+        #plcehodler
+        return 0
 
 def main(args=None):
     rclpy.init(args=args)
