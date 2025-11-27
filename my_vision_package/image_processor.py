@@ -4,6 +4,8 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
+from ament_index_python.packages import get_package_share_directory
+import os
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -38,8 +40,7 @@ class ImageProcessor(Node):
         qos_policy = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
+            depth=1)
 
         self.subscription = self.create_subscription(
             CompressedImage,
@@ -47,15 +48,16 @@ class ImageProcessor(Node):
             self.listener_callback,
             qos_policy)
         
-        self.publisher_ = self.create_publisher(CompressedImage, '/image_processed/compressed', 10) 
+        self.publisher_ = self.create_publisher(CompressedImage, '/image_processed/compressed', qos_policy) 
 
         # --- MediaPipe neural network initialization ---
-        model_path = '/home/eryk/ros2_ws/src/my_vision_package/my_vision_package/models/hand_landmarker.task'
-        
+        package_share_dir = get_package_share_directory('my_vision_package')
+        model_path = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
+
         base_options = python.BaseOptions(model_asset_path=model_path) # Packing model to be readable for mediapipe
         options = vision.HandLandmarkerOptions(                        # Defining handlandmarker options
             base_options = base_options,
-            running_mode = vision.RunningMode.LIVE_STREAM,
+            running_mode = vision.RunningMode.LIVE_STREAM,             # Async mode
             num_hands = 2,
             min_hand_detection_confidence = 0.5,
             min_hand_presence_confidence = 0.5,
@@ -65,27 +67,29 @@ class ImageProcessor(Node):
         self.landmarker = vision.HandLandmarker.create_from_options(options)
 
         self.latest_results = None
+        #For fps counting
+        self.last_frame_time = time.time()
     
     def listener_callback(self, msg: CompressedImage):
         """
         This function is core function which manages all processing modes, with subscription to raw compressed image as well as for publishing results
         """
-        start_time = time.time()
+        mode =  self.get_parameter('mode').value
+        # Frame skipping logic:
+        # We process only every 3rd frame to prevent queue buildup (lag).
+        # By doing this, we trade FPS for lower latency, ensuring that 
+        # the displayed results are synchronized with real-time movement.
+        if mode == 'neural_net_mediapipe':
+            if not hasattr(self, 'frame_count'): self.frame_count = 0
+            self.frame_count += 1
+            if self.frame_count % 3 != 0: return 
+           
         try:
            
-            msg_time = rclpy.time.Time.from_msg(msg.header.stamp)
-            current_time = self.get_clock().now()
-            lag = (current_time - msg_time).nanoseconds / 1e9
-            
-            if lag > 0.3:
-                return
-            
             np_arr = np.frombuffer(msg.data, np.uint8)              # Converting incoming bytes into np.array object for cv2
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)       # Converting one dimmensional array into multidimensional
             height, width, channels = cv_image.shape                # Collecting data about image processed by cv_bridge
-
-            mode =  self.get_parameter('mode').value        
-
+        
             # Switching between modes
             if mode == 'color_rec':
                 processed_image = self.color_rec(cv_image,height, width)
@@ -104,10 +108,14 @@ class ImageProcessor(Node):
                 output_msg.data = encoded_jpg.tobytes()
 
                 self.publisher_.publish(output_msg)
-
-            end_time = time.time()
-            fps = 1.0 / (end_time - start_time)
-            self.get_logger().info(f"FPS: {fps:.2f}")    
+                # Fps counter (regarding frame skipping)
+                now = time.time()
+                time_since_last_frame = now - self.last_frame_time
+                if time_since_last_frame > 0:
+                    fps = 1.0 / time_since_last_frame
+                    self.get_logger().info(f'FPS: {fps:.1f}')
+                self.last_frame_time = now
+            
 
         except Exception as e:
             self.get_logger().info(f'Processing ERROR: {e}')
@@ -145,7 +153,7 @@ class ImageProcessor(Node):
 
             centre_error_x = center_screen[0] - cx              # Calculating error between screen center and obj center
             centre_error_y = center_screen[1] - cy
-            self.get_logger().info(f'\nX error: {centre_error_x},  Y error" {centre_error_y}')
+            self.get_logger().info(f'X error: {centre_error_x},  Y error" {centre_error_y}')
             cv2.line(masked_image, center_screen, center_object, (255, 255, 255), 2)
 
         white_pixels = cv2.countNonZero(mask)                   # Counting pixels containing detected color
@@ -159,9 +167,6 @@ class ImageProcessor(Node):
         """
         self.latest_results = result
 
-            
-
-    
     def neural_net_mediapipe(self, cv_image, height, width):
         """
         This function is core for MediaPipe neural network model processing. It passes images with stamps to queue for processing, and draws points in place of hand landmarks. 
@@ -170,16 +175,25 @@ class ImageProcessor(Node):
         mp_image = mp.Image(image_format = mp.ImageFormat.SRGB, data = rgb_image) 
         timestamp_ms = int(time.time() * 1000)                # Creating timestamp to conect each proccesed image with uniqe stamp
         self.landmarker.detect_async(mp_image, timestamp_ms)
-
+        # Poloting results
         if self.latest_results and self.latest_results.hand_landmarks:
             for hand_landmarks in self.latest_results.hand_landmarks:
                 for landmark in hand_landmarks:
                     x = int(landmark.x * width)
                     y = int(landmark.y * height)
                     cv2.circle(cv_image, (x, y), 5, (0, 255, 255), -1)
+                # Using old API method due to poor new API documentation
+                for connection in mp.solutions.hands.HAND_CONNECTIONS:
+                    start_point = hand_landmarks[connection[0]]
+                    end_point = hand_landmarks[connection[1]]
+                    x1, y1 = int(start_point.x * width), int(start_point.y * height)
+                    x2, y2 = int(end_point.x * width), int(end_point.y * height)
 
-        return cv_image                                       # Returning image with landmarks drawed. Hint: Not every iteration will return image with drawed landmarsk due tu async processing 
-
+                    cv2.line(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                   
+        # Returning image with landmarks drawed. Hint: Not every iteration will return image with drawed landmarsk due tu async processing 
+        return cv_image
+                                           
 def main(args=None):
     rclpy.init(args=args)
     node = ImageProcessor()

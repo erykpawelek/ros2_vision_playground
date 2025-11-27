@@ -23,6 +23,12 @@ def generate_launch_description():
             name='camera',
             output='screen',
             emulate_tty=True,
-            parameters=[]
+            parameters=[
+                {
+                'camera_auto_detect' : True,
+                'width' : 1536,
+                'height' : 864,
+                'framerate' : 30.0,
+            }]
         )
     ])
