@@ -28,7 +28,8 @@ def generate_launch_description():
                 'camera_auto_detect' : True,
                 'width' : 1536,
                 'height' : 864,
-                'framerate' : 30.0,
+                'AfMode': 0,
+                'LensPosition' : 0.0,
             }]
         )
     ])
