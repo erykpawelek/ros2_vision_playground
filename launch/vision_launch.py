@@ -10,10 +10,13 @@ def generate_launch_description():
             output='screen',
             emulate_tty=True,
             parameters=[
-                {'h_upper': 140},
-                {'h_lower': 95},
-                {'s_lower': 90},
-                {'mode' : 'color_rec'}
+                {
+                'h_upper': 140,
+                'h_lower': 95,
+                's_lower': 90,
+                'mode' : 'color_rec',
+                'benchmark_mode' : True,
+                }
             ]
         ),
 
@@ -23,6 +26,13 @@ def generate_launch_description():
             name='camera',
             output='screen',
             emulate_tty=True,
-            parameters=[]
+            parameters=[
+                {
+                'camera_auto_detect' : True,
+                'width' : 1536,
+                'height' : 864,
+                'AfMode': 0,
+                'LensPosition' : 0.0,
+                }]
         )
     ])

@@ -11,6 +11,8 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import time
+import psutil
+import csv
 
 class ImageProcessor(Node):
     """
@@ -29,7 +31,11 @@ class ImageProcessor(Node):
             ('h_upper', 140),
             ('h_lower', 95),
             ('s_lower', 90),
-            ('mode', 'color_rec')])
+            ('mode', 'color_rec'),
+            ('benchmark_mode', False),
+            ('benchmark_start', False),
+            ('benchmark_duration', 60.0),])
+        
            
         # --- RO2 objects declaration and image format adjustment ---
         self.bridge = CvBridge()
@@ -61,19 +67,29 @@ class ImageProcessor(Node):
             num_hands = 2)
         
         self.landmarker =  vision.HandLandmarker.create_from_options(options) 
-        
+        # --- Benchmarking setup ---
+        self.benchmark_last_frame_time = time.time()
+        self.benchmark_start_time = self.benchmark_last_frame_time
+        self.benchmark_running = False
+        # File initialization
+        if self.get_parameter('benchmark_mode').value:
+            self.csv_file = open('benchmark_results_sync.csv', 'w', newline='') 
+            self.csv_writer = csv.writer(self.csv_file)
+            self.csv_writer.writerow(['Timestamp', 'FPS', 'CPU_Usage_Percent', 'RAM_Usage_MB'])
+            self.process = psutil.Process() 
+            self.get_logger().warn("Benchmark mode initializated")
+
     def listener_callback(self, msg: CompressedImage):
         """
         This function is core function which manages all processing modes, with subscription to raw compressed image as well as for publishing results
         """
-        start_time = time.time()
         try:
            
             np_arr = np.frombuffer(msg.data, np.uint8)              # Converting incoming bytes into np.array object for cv2
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)       # Converting one dimmensional array into multidimensional
             height, width, channels = cv_image.shape                # Collecting data about image processed by cv_bridge
 
-            mode =  self.get_parameter('mode').value
+            mode = self.get_parameter('mode').value
 
             # Switching between modes
             if mode == 'color_rec':
@@ -94,9 +110,7 @@ class ImageProcessor(Node):
 
                 self.publisher_.publish(output_msg)
 
-            stop_time = time.time()
-            fps = 1/(stop_time - start_time)
-            self.get_logger().info(f'Current FPS: {fps}')
+                self.benchmark()
 
         except Exception as e:
             self.get_logger().info(f'Processing ERROR: {e}')
@@ -168,6 +182,32 @@ class ImageProcessor(Node):
                     cv2.line(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
         return cv_image  
+
+    def benchmark(self):
+        """
+        This function is responsible for benchmarking the process. It logs fps data in real time and with parameters start values it logs data to csv file.
+        """
+        stop_time = time.time()
+        duration = stop_time - self.benchmark_last_frame_time
+        self.benchmark_last_frame_time = stop_time
+        if duration > 0:
+            fps = 1.0 / duration
+            self.get_logger().info(f'Current FPS: {fps:.1f}')
+        
+        if self.get_parameter('benchmark_start').value:
+            if not self.benchmark_running:
+                self.benchmark_start_time = time.time()
+                self.benchmark_running = True
+            cpu_usage = self.process.cpu_percent()
+            ram_usage = self.process.memory_info().rss / 1024 / 1024
+            elapsed = stop_time - self.benchmark_start_time
+
+            self.csv_writer.writerow([f"{elapsed:.2f}", f"{fps:.2f}", f"{cpu_usage:.1f}", f"{ram_usage:.1f}"])
+
+            if elapsed >= self.get_parameter('benchmark_duration').value:
+                self.get_logger().warning("BENCHMARK COMPLETE. Saving and shutting down.")
+                self.csv_file.close()
+                rclpy.shutdown()
 
 def main(args=None):
     rclpy.init(args=args)
