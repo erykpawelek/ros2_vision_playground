@@ -25,3 +25,4 @@ To synchronize the high-speed camera (30 FPS) with the slower CPU inference (~10
 * **Mode:** `neural_net_mediapipe` uses `RunningMode.LIVE_STREAM` (Async).
 * **Callback System:** Implements `neural_net_mediapipe_callback` to handle inference results from a separate thread.
 * **Visualization:** Draws the *latest available* inference result on the *current* video frame (may show slight misalignment during fast motion due to async nature).
+
