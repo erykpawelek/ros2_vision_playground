@@ -60,7 +60,7 @@ During development, two different architectural approaches were tested to handle
 * Pros: Zero latency, predictable behavior. Best for real-time analysis.
 
 #### 2.Asynchronous Mode (Experimental)
-* Uses RunningMode.LIVE_STREAM with a custom frame skipping algorithm.
+* Uses `RunningMode.LIVE_STREAM` with a custom frame skipping algorithm.
 * Pros: Decouples camera acquisition from processing.
 * Cons: Introduced significant latency (~7s) on this hardware configuration due to internal buffering limitations (before frame skipping was implemented).
 
@@ -76,4 +76,20 @@ During development, two different architectural approaches were tested to handle
 
 > **Note:** In linux system CPU percentage usage is calulated in way where each core has 100%. In our case Raspberry PI 5 has 4 cores so maximum capacity of our processor would be expresed as 400%.
 
-#### Conclusions
+**1. Color Filtration (Blue Line)**
+* **Performance:** Highest throughput (~22-24 FPS).
+* **Resource Usage:** Moderate CPU load (~130%).
+* **Conclusion:** Extremely efficient for simple tasks like line following or colored object tracking.
+
+**2. Neural Network - Synchronous Mode (Red Line)**
+* **Performance:** ~9 FPS. Frame rate is strictly locked to the CPU inference time.
+* **Resource Usage:** Lowest CPU load (~115%).
+* **Characteristics:** Zero-lag visualization. The displayed frame always matches the inference result perfectly because processing blocks the execution.
+
+**3. Neural Network - Asynchronous Mode (Yellow Line)**
+* **Performance:** ~10 FPS. Maintains a consistent frame rate due to the implemented frame-skipping logic (`10 FPS target`).
+* **Resource Usage:** Highest CPU load (~140%) due to overhead from thread management and context switching.
+* **Characteristics:** While this mode introduces slight visual latency compared to the synchronous approach, it is the **safest architecture for production robotic systems**. By decoupling inference from the main thread, it ensures that the ROS 2 node remains responsive to other callbacks (e.g., emergency stop signals, sensor fusion) even under heavy load.
+
+**System Headroom:**
+In all test cases, CPU usage peaked around 1.6 Load Average (on a 4-core system). This indicates that approximately **60% of the Raspberry Pi's computational power remains available** for other critical subsystems such as Lidar processing, SLAM, or motor control.
