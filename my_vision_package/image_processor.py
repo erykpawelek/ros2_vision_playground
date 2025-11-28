@@ -12,6 +12,8 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import time
+import psutil
+import csv
 
 
 
@@ -32,7 +34,10 @@ class ImageProcessor(Node):
             ('h_upper', 140),
             ('h_lower', 95),
             ('s_lower', 90),
-            ('mode', 'color_rec')])
+            ('mode', 'color_rec'),
+            ('benchmark_mode', False),
+            ('benchmark_start', False),
+            ('benchmark_duration', 60.0),])
            
         # --- RO2 objects declaration and image format adjustment ---
         self.bridge = CvBridge()
@@ -67,8 +72,18 @@ class ImageProcessor(Node):
         self.landmarker = vision.HandLandmarker.create_from_options(options)
 
         self.latest_results = None
-        #For fps counting
-        self.last_frame_time = time.time()
+
+       # --- Benchmarking setup ---
+        self.benchmark_last_frame_time = time.time()
+        self.benchmark_start_time = self.benchmark_last_frame_time
+        self.benchmark_running = False
+        # File initialization
+        if self.get_parameter('benchmark_mode').value:
+            self.csv_file = open('benchmark_results_async.csv', 'w', newline='') 
+            self.csv_writer = csv.writer(self.csv_file)
+            self.csv_writer.writerow(['Timestamp', 'FPS', 'CPU_Usage_Percent', 'RAM_Usage_MB'])
+            self.process = psutil.Process() 
+            self.get_logger().warn("Benchmark mode initializated")
     
     def listener_callback(self, msg: CompressedImage):
         """
@@ -108,13 +123,8 @@ class ImageProcessor(Node):
                 output_msg.data = encoded_jpg.tobytes()
 
                 self.publisher_.publish(output_msg)
-                # Fps counter (regarding frame skipping)
-                now = time.time()
-                time_since_last_frame = now - self.last_frame_time
-                if time_since_last_frame > 0:
-                    fps = 1.0 / time_since_last_frame
-                    self.get_logger().info(f'FPS: {fps:.1f}')
-                self.last_frame_time = now
+                
+                self.benchmark()
             
 
         except Exception as e:
@@ -193,7 +203,33 @@ class ImageProcessor(Node):
                    
         # Returning image with landmarks drawed. Hint: Not every iteration will return image with drawed landmarsk due tu async processing 
         return cv_image
-                                           
+
+    def benchmark(self):
+        """
+        This function is responsible for benchmarking the process. It logs fps data in real time and with parameters start values it logs data to csv file.
+        """
+        stop_time = time.time()
+        duration = stop_time - self.benchmark_last_frame_time
+        self.benchmark_last_frame_time = stop_time
+        if duration > 0:
+            fps = 1.0 / duration
+            self.get_logger().info(f'Current FPS: {fps:.1f}')
+        
+        if self.get_parameter('benchmark_start').value:
+            if not self.benchmark_running:
+                self.benchmark_start_time = time.time()
+                self.benchmark_running = True
+            cpu_usage = self.process.cpu_percent()
+            ram_usage = self.process.memory_info().rss / 1024 / 1024
+            elapsed = stop_time - self.benchmark_start_time
+
+            self.csv_writer.writerow([f"{elapsed:.2f}", f"{fps:.2f}", f"{cpu_usage:.1f}", f"{ram_usage:.1f}"])
+
+            if elapsed >= self.get_parameter('benchmark_duration').value:
+                self.get_logger().warning("BENCHMARK COMPLETE. Saving and shutting down.")
+                self.csv_file.close()
+                rclpy.shutdown()
+
 def main(args=None):
     rclpy.init(args=args)
     node = ImageProcessor()
