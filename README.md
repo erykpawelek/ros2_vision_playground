@@ -63,3 +63,17 @@ During development, two different architectural approaches were tested to handle
 * Uses RunningMode.LIVE_STREAM with a custom frame skipping algorithm.
 * Pros: Decouples camera acquisition from processing.
 * Cons: Introduced significant latency (~7s) on this hardware configuration due to internal buffering limitations (before frame skipping was implemented).
+
+## Benchmarking 
+
+**Time series figures:**
+
+![Time series figures](images/time_series.png)
+
+**Averages figures**
+
+![Average figures](images/averages.png)
+
+> **Note:** In linux system CPU percentage usage is calulated in way where each core has 100%. In our case Raspberry PI 5 has 4 cores so maximum capacity of our processor would be expresed as 400%.
+
+#### Conclusions
