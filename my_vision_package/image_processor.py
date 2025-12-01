@@ -13,6 +13,7 @@ from mediapipe.tasks.python import vision
 import time
 import psutil
 import csv
+from ultralytics import YOLO
 
 class ImageProcessor(Node):
     """
@@ -34,7 +35,9 @@ class ImageProcessor(Node):
             ('mode', 'color_rec'),
             ('benchmark_mode', False),
             ('benchmark_start', False),
-            ('benchmark_duration', 60.0),])
+            ('benchmark_duration', 60.0),
+            ('yolo_format', 'pt')])
+
         
            
         # --- RO2 objects declaration and image format adjustment ---
@@ -57,16 +60,27 @@ class ImageProcessor(Node):
             '/image_processed/compressed', 
             qos_policy) 
 
-        # --- Initialization of neural network ---
+        # --- Initialization of neural network (MediaPipe) ---
         package_share_dir = get_package_share_directory('my_vision_package')
-        model_path = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
+        model_path_mediapipe = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
 
         options = vision.HandLandmarkerOptions(
-            base_options = python.BaseOptions(model_asset_path = model_path),
+            base_options = python.BaseOptions(model_asset_path = model_path_mediapipe),
             running_mode = vision.RunningMode.VIDEO,
             num_hands = 2)
         
         self.landmarker =  vision.HandLandmarker.create_from_options(options) 
+
+        # --- Initialization of neural network (YOLO) ---
+        if self.get_parameter('yolo_format').value == 'onnx':
+            model_path_ultralytics = os.path.join(package_share_dir, 'models', 'industrial_signs_yolo_nano_rev0.onnx')
+        elif self.get_parameter('yolo_format').value == 'pt':
+            model_path_ultralytics = os.path.join(package_share_dir, 'models', 'industrial_signs_yolo_nano_rev0.pt')
+        elif self.get_parameter('yolo_format').value == 'ncnn':
+            model_path_ultralytics = os.path.join(package_share_dir, 'models', 'industrial_signs_yolo_nano_rev0_ncnn_model') 
+        # Loading model
+        self.model_yolo = YOLO(model_path_ultralytics, task='detect')
+
         # --- Benchmarking setup ---
         self.benchmark_last_frame_time = time.time()
         self.benchmark_start_time = self.benchmark_last_frame_time
@@ -96,6 +110,8 @@ class ImageProcessor(Node):
                 processed_image = self.color_rec(cv_image, height, width)
             elif mode == 'neural_net_mediapipe':
                 processed_image = self.neural_net_mediapipe(cv_image, height, width)
+            elif mode == 'neural_net_ultralytics':
+                processed_image = self.neural_net_ultralytics(cv_image)
             else:
                 self.get_logger().info('Invalid mode! \n Please choose between: \n color_rec\n neural_net_mediapipe')
                 processed_image = cv_image
@@ -182,6 +198,14 @@ class ImageProcessor(Node):
                     cv2.line(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
         return cv_image  
+
+    def neural_net_ultralytics(self, cv_image):
+        """
+        This function is core for yolov8 nano custom trained  neural network model processing.  
+        """
+        results = self.model_yolo.predict(cv_image, imgsz=640, conf=0.35)
+        annotaded_frame = results[0].plot()
+        return annotaded_frame
 
     def benchmark(self):
         """

@@ -13,7 +13,8 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*')),
-        (os.path.join('share', package_name, 'models'), glob('my_vision_package/models/*.task'))
+        (os.path.join('share', package_name, 'models'), glob('my_vision_package/models/*.*')),
+        (os.path.join('share', package_name, 'models/industrial_signs_yolo_nano_rev0_ncnn_model'), glob('my_vision_package/models/industrial_signs_yolo_nano_rev0_ncnn_model/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

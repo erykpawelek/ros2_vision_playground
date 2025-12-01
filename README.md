@@ -7,15 +7,16 @@ This project serves as a development platform for experimenting with real-time p
 ## Key Features
 
 * **Dispatcher Architecture:** Enables dynamic run-time switching between processing algorithms (Classical CV vs. AI) via ROS parameters, ensuring zero downtime.
-* **Color Object Tracking:** Implements HSV thresholding, contour analysis, and moment-based centroid calculation for high-speed tracking (60+ FPS).
-* **AI Hand Tracking:** Integrates Google MediaPipe for robust hand landmark detection using an asynchronous pipeline.
+* **Color Object Tracking:** Implements HSV thresholding, contour analysis, and moment-based centroid calculation for tracking.
+* **AI Hand Tracking:** Integrates Google MediaPipe for robust hand landmark detection using an asynchronous/synchronous pipeline.
+* **Custom Object Detection (YOLOv8):** Supports custom-trained neural networks for specialized industrial object recognition using the Ultralytics YOLOv8 architecture. Compatible with multiple inference backends (PyTorch, ONNX, NCNN) for optimized performance on ARM CPUs.
 * **Bandwidth Optimization:** Utilizes `sensor_msgs/CompressedImage` for transport to minimize Wi-Fi saturation and latency during remote debugging.
 * **Dynamic Reconfiguration:** Key parameters (e.g., HSV thresholds) can be tuned dynamically at runtime.
 * **Portable Design:** Uses dynamic path resolution (`ament_index_python`) for model files, ensuring the package runs on any machine without hardcoded paths.
 
-## Engineering Challenge: Handling Asynchronous Inference Latency
+## Engineering Challenge 1: Handling Asynchronous Inference Latency
 
-A critical challenge encountered during the development of the AI module was managing the discrepancy between the high data rate of the sensor and the inference speed of the CPU.
+A critical challenge encountered during the development of the AI module was managing the discrepancy between the high data rate of the sensor and the inference speed of the CPU using `mediapipe`.
 
 ### The Problem: Buffer Bloat
 The camera hardware (IMX708) operates at **30 FPS** (generating data every ~33ms). However, complex neural network inference on the CPU takes approximately **90-100ms** per frame (~10 FPS). 
@@ -31,6 +32,14 @@ To resolve this, a **Frame Decimation (Skipping)** logic was implemented at the 
     * **Zero-Queue Operation:** Prevents the accumulation of stale data in input buffers.
     * **Latency Reduction:** Reduced end-to-end system latency from **~7000ms to <200ms**.
     * **Resource Management:** Allows the CPU to focus solely on the most recent visual data, ensuring control signals reflect the current state of reality.
+
+## Engineering Challenge 2: Obtaining optimal frame rate running yolo8 nano model:
+
+A secondary challenge involved maximizing the throughput of the custom object detection model `YOLOv8 Nano`.
+
+**The Problem:** Standard PyTorch inference (`.pt`) is optimized for NVIDIA GPUs and struggles with thread management on ARM CPUs, leading to inefficient core utilization (~65%) and low frame rates.
+
+**The Solution:** Backend Benchmarking To identify the optimal runtime environment, three different model formats were evaluated on the live hardware.
 
 ## Hardware & Prerequisites
 
@@ -49,6 +58,7 @@ Ensure you have the following installed on your Raspberry Pi:
 sudo apt install ros-jazzy-cv-bridge ros-jazzy-image-transport-plugins python3-opencv
 # Note: It is recommended to use a virtual environment for Python packages
 pip3 install mediapipe
+pip3 install ultralytics onnx onnxruntime ncnn --break-system-packages
 ```
 ## Architecture Notes & Experimental Branch
 
