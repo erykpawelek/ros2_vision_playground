@@ -76,30 +76,49 @@ During development, two different architectural approaches were tested to handle
 
 ## Benchmarking 
 
-**Time series figures:**
+**Time series figures (Python):**
 
 ![Time series figures](images/time_series.png)
 
-**Averages figures**
+**Averages figures (Python)**
 
 ![Average figures](images/averages.png)
 
 > **Note:** In linux system CPU percentage usage is calulated in way where each core has 100%. In our case Raspberry PI 5 has 4 cores so maximum capacity of our processor would be expresed as 400%.
 
-**1. Color Filtration (Blue Line)**
-* **Performance:** Highest throughput (~22-24 FPS).
+**1. Color Filtration**
+* **Performance:** Highest throughput (~22.6 FPS).
 * **Resource Usage:** Moderate CPU load (~130%).
 * **Conclusion:** Extremely efficient for simple tasks like line following or colored object tracking.
 
-**2. Neural Network - Synchronous Mode (Red Line)**
-* **Performance:** ~9 FPS. Frame rate is strictly locked to the CPU inference time.
+**2. Neural Network - Synchronous Mode**
+* **Performance:** ~9.4 FPS. Frame rate is strictly locked to the CPU inference time.
 * **Resource Usage:** Lowest CPU load (~115%).
 * **Characteristics:** Zero-lag visualization. The displayed frame always matches the inference result perfectly because processing blocks the execution.
 
-**3. Neural Network - Asynchronous Mode (Yellow Line)**
+**3. Neural Network - Asynchronous Mode**
 * **Performance:** ~10 FPS. Maintains a consistent frame rate due to the implemented frame-skipping logic (`10 FPS target`).
 * **Resource Usage:** Highest CPU load (~140%) due to overhead from thread management and context switching.
 * **Characteristics:** While this mode introduces slight visual latency compared to the synchronous approach, it is the **safest architecture for production robotic systems**. By decoupling inference from the main thread, it ensures that the ROS 2 node remains responsive to other callbacks (e.g., emergency stop signals, sensor fusion) even under heavy load.
 
+
+**4. Neural Network - YOLOv8 Nano using PyTorch/`.pt`**
+* **Performance:** Lowest, stable ~2.7 FPS. 
+* **Resource usage:** Moderate CPU load (~192%).
+* **Analysis:** Despite using the smallest Nano model, the computational cost increased significantly compared to MediaPipe. The logs indicate suboptimal resource utilization (only ~50% of the 4-core capacity). This confirms that the standard PyTorch runtime is not optimized for ARM architectures, leading to significant overhead and poor thread scheduling.
+* **Characteristics:** High latency makes this format unsuitable for real-time robotic control loops.
+
+**5. Neural Network - YOLOv8 Nano using ONNX Runtime/`.onnx`**
+* **Performance:** Critical saturation (~323%). Total system load peaked at 388%.
+* **Resource usage:** Highest, ~323%. This backend format is well opimized for processor computing but our ARM **Broadcom BCM2712** isn't best at computing floating point calculations. While opperating on this mode overal CPU's usage went to 388%.
+* **Analysis:** ONNX Runtime efficiently parallelized the workload across all cores, pushing the CPU to its thermal and arithmetic limits. However, the bottleneck shifted from software inefficiency to raw hardware limitations—specifically, the Broadcom BCM2712's floating-point (FP32) compute capability.
+* **Characteristics:** Unacceptable latency combined with complete resource exhaustion, leaving no headroom for other robot processes.
+
+**6. Neural Network -YOLOv8 Nano using NCNN/`.ncnn`**
+* **Performance:** Best CPU-only result among YOLO formats (~3.8 FPS).
+* **Resource usage:** Optimized (~261%).
+* **Analysis:** The NCNN framework (developed by Tencent) is explicitly designed for mobile/embedded systems. It leverages ARM NEON instructions and optimized memory alignment. The results show a 40% FPS improvement over PyTorch while maintaining a reasonable CPU load, proving it is the most efficient backend for CPU-based inference on Raspberry Pi.
+* **Characteristics:** While latency is still high for high-speed navigation, this format offers the best trade-off for static tasks or slow maneuvers without hardware acceleration.
+
 **System Headroom:**
-In all test cases, CPU usage peaked around 1.6 Load Average (on a 4-core system). This indicates that approximately **60% of the Raspberry Pi's computational power remains available** for other critical subsystems such as Lidar processing, SLAM, or motor control.
+Running modern Convolutional Neural Networks (CNN) like YOLOv8 on a Raspberry Pi 5 CPU is possible but constrained by compute power (2-4 FPS). While NCNN offers the best CPU performance, achieving real-time control (>30 FPS) requires a dedicated hardware accelerator, such as the Raspberry Pi AI Kit (Hailo-8L). This will be the next step in the project development.
