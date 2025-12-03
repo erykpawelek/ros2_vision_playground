@@ -20,7 +20,7 @@ class ImageProcessor(Node):
     ROS2 node for real time image procesing 
 
     It subscribes real time camera image and processes color detection and filtration
-    in HSV color space definition. It publishes result image which is combination od orginal and bit wise mask
+    in HSV color space definition. It publishes result image which is combination of orginal and bit wise mask
     """
     def __init__(self):
         super().__init__('image_processor')
@@ -38,10 +38,8 @@ class ImageProcessor(Node):
             ('benchmark_duration', 60.0),
             ('yolo_format', 'pt')])
 
-        
-           
         # --- RO2 objects declaration and image format adjustment ---
-        self.bridge = CvBridge()
+        
         # Setting up quality of service for best performance 
         qos_policy = QoSProfile(
             reliability = ReliabilityPolicy.BEST_EFFORT,
@@ -98,7 +96,7 @@ class ImageProcessor(Node):
         This function is core function which manages all processing modes, with subscription to raw compressed image as well as for publishing results
         """
         try:
-           
+            # Having np library we can easily skip using cv_ridge
             np_arr = np.frombuffer(msg.data, np.uint8)              # Converting incoming bytes into np.array object for cv2
             cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)       # Converting one dimmensional array into multidimensional
             height, width, channels = cv_image.shape                # Collecting data about image processed by cv_bridge

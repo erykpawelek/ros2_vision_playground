@@ -86,6 +86,8 @@ During development, two different architectural approaches were tested to handle
 
 > **Note:** In linux system CPU percentage usage is calulated in way where each core has 100%. In our case Raspberry PI 5 has 4 cores so maximum capacity of our processor would be expresed as 400%.
 
+>**Note:** All test were performed on `1536x864` resolution. 
+
 **1. Color Filtration**
 * **Performance:** Highest throughput (~22.6 FPS).
 * **Resource Usage:** Moderate CPU load (~130%).
