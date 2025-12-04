@@ -80,7 +80,7 @@ During development, two different architectural approaches were tested to handle
 
 ![Time series figures](images/time_series.png)
 
-**Averages figures (Python)**
+**Averages figures (Python):**
 
 ![Average figures](images/averages.png)
 

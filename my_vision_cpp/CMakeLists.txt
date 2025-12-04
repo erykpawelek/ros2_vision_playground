@@ -25,10 +25,6 @@ target_include_directories(img_processor_cpp PRIVATE
 # Manual linking of external libraries
 target_link_libraries(img_processor_cpp
   ${OpenCV_LIBS})
-# Telling where to place compiled files
-install(TARGETS
-  img_processor_cpp
-  DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -41,4 +37,16 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
+
+# Telling where to place compiled files
+install(TARGETS
+  img_processor_cpp
+  DESTINATION lib/${PROJECT_NAME})
+
+install(
+  DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+  )
+
+
 ament_package()
