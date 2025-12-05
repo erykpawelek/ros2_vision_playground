@@ -1,5 +1,8 @@
 #include <memory>
 #include <string>
+#include <fstream>
+#include <chrono>
+#include <unistd.h>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
@@ -17,11 +20,22 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr publisher_;
     // Parameters callback ptr
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr params_callback_handle_;
-    
+    // Qos policy
     rclcpp::QoS qos_policy_;
     // Parameters values
     int h_upper_, h_lower_, s_lower_;
+    bool benchmark_start_;
     std::string mode_;
+    // Benchmarking
+    std::chrono::steady_clock::time_point benchmark_last_frame_time_; 
+    std::chrono::steady_clock::time_point benchmark_start_time_;
+    std::chrono::seconds benchmark_duration_;
+    bool benchmark_running_;
+    std::ofstream csv_file_;
+    // System log data collection asisting variables
+    std::clock_t last_cpu_time_ ;
+    std::chrono::steady_clock::time_point last_sys_time_;
+
 
 void listener_callback(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
     // Converting image format to array style formato on which cv library operates
@@ -41,6 +55,7 @@ void listener_callback(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
     output_msg.encoding = "bgr8";
     output_msg.image = output_image;
     
+    benchmark();
     publisher_->publish(*output_msg.toCompressedImageMsg());
 }
 
@@ -48,17 +63,26 @@ public:
     ImageProcessor()
     :   Node("image_processor"),
         // Setting up QoS policy for camera stream
-        qos_policy_(rclcpp::QoS(1).best_effort().durability_volatile())
+        qos_policy_(rclcpp::QoS(1).best_effort().durability_volatile()),
+        last_sys_time_(std::chrono::steady_clock::now()),
+        benchmark_last_frame_time_(std::chrono::steady_clock::now()),
+        benchmark_running_(false)
+
     {   
         this->declare_parameter("h_upper", 140);
         this->declare_parameter("h_lower", 95);
         this->declare_parameter("s_lower", 90);
         this->declare_parameter("mode", "color_rec");
+        this->declare_parameter("benchmark_mode", false);
+        this->declare_parameter("benchmark_start", false);
+        this->declare_parameter("benchmark_duration", 60);
         
         h_upper_ = this->get_parameter("h_upper").as_int();
         h_lower_ = this->get_parameter("h_lower").as_int();
         s_lower_ = this->get_parameter("s_lower").as_int();
         mode_ = this->get_parameter("mode").as_string();
+        benchmark_start_ = this->get_parameter("benchmark_start").as_bool();
+        
         // Registering the callback to handle dynamic parameter updates
         params_callback_handle_ = this->add_on_set_parameters_callback(
             std::bind(&ImageProcessor::parametersCallback,
@@ -131,38 +155,40 @@ public:
     }
 
     rcl_interfaces::msg::SetParametersResult parametersCallback(
-        const std::vector<rclcpp::Parameter> &parameters)
+        const std::vector<rclcpp::Parameter> & parameters)
     {
         rcl_interfaces::msg::SetParametersResult result;
-        int val;
+        int val_int;
         std::string val_str;
+        bool val_bool;
+
         for(const auto &param : parameters)
         {
             if (param.get_name() == "h_upper"){
-                val = param.as_int();
-                if (val >= 0 && val <= 179){
+                val_int = param.as_int();
+                if (val_int >= 0 && val_int <= 179){
                     result.successful = true;
-                    this->h_upper_ = val;
+                    this->h_upper_ = val_int;
                     result.reason = "Success!";
                 }else{
                     result.successful = false;
                     result.reason = "HSV hue value is in range 0-179!";
                 }
             }else if (param.get_name() == "h_lower"){
-                val = param.as_int();
-                if (val >= 0 && val <= 179){
+                val_int = param.as_int();
+                if (val_int >= 0 && val_int <= 179){
                     result.successful = true;
-                    this->h_lower_ = val;
+                    this->h_lower_ = val_int;
                     result.reason = "Success!";
                 }else{
                     result.successful = false;
                     result.reason = "HSV hue value is in range 0-179!";
                 }
             }else if (param.get_name() == "s_lower"){
-                val = param.as_int();
-                if (val >= 0 && val <= 255){
+                    val_int = param.as_int();
+                if (val_int >= 0 && val_int <= 255){
                     result.successful = true;
-                    this->s_lower_ = val;
+                    this->s_lower_ = val_int;
                     result.reason = "Success!";
                 }else{
                     result.successful = false;
@@ -178,9 +204,89 @@ public:
                     result.successful = false;
                     result.reason = "Invalid mode:" + val_str;
                 }
+            }else if (param.get_name() == "benchmark_start"){
+                this->benchmark_start_ = param.as_bool();
+                result.successful = true;
+                result.reason = "Success!";
             }
         }
         return result;
+    }
+
+    void benchmark(){
+        std::chrono::steady_clock::time_point stop_time =std::chrono::steady_clock::now();
+        auto cycle_duration  = stop_time - benchmark_last_frame_time_;
+        double cycle_duration_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(cycle_duration).count();
+        benchmark_last_frame_time_ = stop_time;
+        if (cycle_duration_seconds > 0){
+            double fps = 1 / cycle_duration_seconds;
+            RCLCPP_INFO(this->get_logger(),"Current FPS: %.2f", fps);
+        }
+    }
+
+    /**
+     * @brief Loads data about RAM usage of process from system logs.
+     * @return Value of RAM usage in Mb.
+     */
+    double get_ram_usage(){
+        // Creating input file stream
+        std::ifstream stat_stream("/proc/self/status");
+        std::string line;
+        long rss_kb = 0;
+
+        while (std::getline(stat_stream,line)){
+            // Looking for line Vm Resident Set Size
+            if (line.substr(0, 6) == "VmRSS:"){
+                std::stringstream ss(line);
+                std::string label;
+                // Extracting RAM kb usage
+                ss >> label;
+                ss >> rss_kb;
+                break;
+            }
+        }
+        return rss_kb / 1024.0;
+    }
+    /**
+     * @brief Loads data about CPU usage of process from system logs and performs neccessary calculation to obtain result in %.
+     * @return Procentage value of processor usage.
+     */
+    double get_cpu_usage(){
+        // Creating input file stream
+        std::ifstream stat_file("/proc/self/stat");
+        // Due to "/proc/self/stat" file structure we can place it's whole content into one 'line'.
+        std::string line;
+        std::getline(stat_file, line);
+        std::stringstream ss(line);
+        std::string trash;
+        // Looking for utime and stime which are on 14th and 15th position of this file. 
+        // User time is time which processor spend on this proces.
+        // System time is time which processor spend in kernel mode reading files, alocating memory, networc protocols...
+        for(int i=0; i<13; ++i) ss >> trash;
+
+        long unsigned int utime, stime;
+        ss >> utime >> stime;
+        // We want all cycle time including network processes and others
+        long total_cpu_ticks = utime + stime;
+        auto now = std::chrono::steady_clock::now();
+        double cpu_percent = 0.0;
+        // Calculating ticks and time between cycles
+        if (last_cpu_time_ > 0){
+            long ticks_diff = total_cpu_ticks - last_cpu_time_;
+
+            std::chrono::duration<double> time_diff = now - last_sys_time_;
+            double seconds = time_diff.count();
+            // Converting ticks to time to find how much of time our processor were occupied by process
+            long clk_tck = sysconf(_SC_CLK_TCK);
+            if (seconds > 0){
+                // Calculating procesor usage by formula: busy_time_of_procesor / sumaric_time_of_cycle, *hint: sysconf(_SC_CLK_TCK) is amount of time for one processors tick
+                cpu_percent = (double(ticks_diff) / clk_tck) / seconds * 100;
+            }
+        }
+        // Actualizing ticks and time for next cycle
+        last_cpu_time_ = total_cpu_ticks;
+        last_sys_time_ = now;
+        return cpu_percent;
     }
 };
 

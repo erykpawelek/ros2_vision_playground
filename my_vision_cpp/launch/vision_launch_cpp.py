@@ -14,7 +14,8 @@ def generate_launch_description():
                 'h_upper': 140,
                 'h_lower': 95,
                 's_lower': 90,
-                'mode' : 'color_rec'
+                'mode' : 'color_rec',
+                'benchmark_mode' : False,
                 }
             ]
         ),
