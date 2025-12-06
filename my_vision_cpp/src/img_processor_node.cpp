@@ -35,6 +35,11 @@ private:
     // System log data collection asisting variables
     std::clock_t last_cpu_time_ ;
     std::chrono::steady_clock::time_point last_sys_time_;
+    // Data colection containers
+    std::vector<double> log_timestamps_;
+    std::vector<double> log_fps_;
+    std::vector<double> log_cpu_;
+    std::vector<double> log_ram_;
 
 
 void listener_callback(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
@@ -97,6 +102,12 @@ public:
             "/camera/image_raw/compressed",
             qos_policy_,
             std::bind(&ImageProcessor::listener_callback, this, std::placeholders::_1));
+    }
+
+    ~ImageProcessor(){
+        if(!log_timestamps_.empty()){
+            save_benchmark_data();
+        }
     }
     /**
      * @brief Performs color-based object detection and position estimation.
@@ -218,9 +229,25 @@ public:
         auto cycle_duration  = stop_time - benchmark_last_frame_time_;
         double cycle_duration_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(cycle_duration).count();
         benchmark_last_frame_time_ = stop_time;
+        double fps;
         if (cycle_duration_seconds > 0){
-            double fps = 1 / cycle_duration_seconds;
+            fps = 1 / cycle_duration_seconds;
             RCLCPP_INFO(this->get_logger(),"Current FPS: %.2f", fps);
+        }
+
+        if (benchmark_start_){
+            if (!benchmark_running_){
+                benchmark_start_time_ = std::chrono::steady_clock::now();
+                benchmark_running_ = true;
+            }
+            auto cpu_usage = get_cpu_usage();
+            auto ram_usage = get_ram_usage();
+            auto elapsed = stop_time - benchmark_start_time_;
+            double elapsed_f = std::chrono::duration_cast<std::chrono::duration<double>>(elapsed).count();
+            log_timestamps_.push_back(elapsed_f);
+            log_cpu_.push_back(cpu_usage);
+            log_ram_.push_back(ram_usage);
+            log_fps_.push_back(fps);
         }
     }
 
@@ -287,6 +314,26 @@ public:
         last_cpu_time_ = total_cpu_ticks;
         last_sys_time_ = now;
         return cpu_percent;
+    }
+
+    void save_benchmark_data(){
+        RCLCPP_WARN(this->get_logger(),"Saving benchmark results to file");
+        std::ofstream benchmark_file("benchmark_results_cpp.csv");
+        // Header
+        if (benchmark_file.is_open()) {
+            benchmark_file << "Timestamp,FPS,CPU_Usage_Percent,RAM_Usage_MB\n";
+            for(size_t i = 0; i < log_timestamps_.size(); ++i){
+                benchmark_file
+                << log_timestamps_[i] << ","
+                << log_fps_[i] << ","
+                << log_cpu_[i] << ","
+                << log_ram_[i] << "\n";
+            }
+            benchmark_file.close();
+            RCLCPP_WARN(this->get_logger(), "Data save successfull!");
+        }else{
+            RCLCPP_ERROR(this->get_logger(), "Data hasn't been saved!");
+        }
     }
 };
 
