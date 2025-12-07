@@ -11,6 +11,10 @@
 #include "rclcpp/qos.hpp"
 
 #include <opencv2/opencv.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <onnxruntime_cxx_api.h>
+
+
 
 class ImageProcessor : public rclcpp::Node
 {
@@ -40,6 +44,13 @@ private:
     std::vector<double> log_fps_;
     std::vector<double> log_cpu_;
     std::vector<double> log_ram_;
+    // Dynamic file path
+    std::string package_share_directory_;
+    std::string onnx_model_path_;
+    // Onnx api atributes
+    Ort::Env ort_env_;
+    std::shared_ptr<Ort::Session> ort_session_;
+    Ort::SessionOptions ort_session_options_;
 
 
 void listener_callback(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
@@ -69,10 +80,14 @@ public:
     :   Node("image_processor"),
         // Setting up QoS policy for camera stream
         qos_policy_(rclcpp::QoS(1).best_effort().durability_volatile()),
-        last_sys_time_(std::chrono::steady_clock::now()),
         benchmark_last_frame_time_(std::chrono::steady_clock::now()),
-        benchmark_running_(false)
-
+        benchmark_running_(false),
+        last_sys_time_(std::chrono::steady_clock::now()),
+        package_share_directory_(ament_index_cpp::get_package_share_directory("my_vision_cpp")),
+        onnx_model_path_(package_share_directory_ + "/models/industrial_signs_yolo_nano_rev0.onnx"),
+        ort_env_(ORT_LOGGING_LEVEL_WARNING, "ONNX_yolo8n"),
+        ort_session_(nullptr),
+        ort_session_options_()
     {   
         this->declare_parameter("h_upper", 140);
         this->declare_parameter("h_lower", 95);
@@ -80,13 +95,18 @@ public:
         this->declare_parameter("mode", "color_rec");
         this->declare_parameter("benchmark_mode", false);
         this->declare_parameter("benchmark_start", false);
-        this->declare_parameter("benchmark_duration", 60);
+        this->declare_parameter("benchmark_duration", 60.0);
         
         h_upper_ = this->get_parameter("h_upper").as_int();
         h_lower_ = this->get_parameter("h_lower").as_int();
         s_lower_ = this->get_parameter("s_lower").as_int();
         mode_ = this->get_parameter("mode").as_string();
         benchmark_start_ = this->get_parameter("benchmark_start").as_bool();
+
+        // Loading neural net path to enviornment
+        ort_session_options_.SetInterOpNumThreads(1);
+        ort_session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+        ort_session_ = std::make_shared<Ort::Session>(ort_env_, onnx_model_path_.c_str(), ort_session_options_);
         
         // Registering the callback to handle dynamic parameter updates
         params_callback_handle_ = this->add_on_set_parameters_callback(
@@ -163,6 +183,55 @@ public:
             cv::drawContours(masked_image, contours_to_draw, -1, cv::Scalar(0, 255, 0), 2); 
         } 
         return masked_image;
+    }
+
+    cv::Mat neural_net_onnx(cv::Mat & imported_image){
+        // Converting standard cv::Mat to 4-dimensional Mat with NCHW dimensions order
+        cv::Mat blob_prep = cv::dnn::blobFromImage(
+            imported_image,
+            1.0/255.0,
+            cv::Size(cv::Point(640, 640)),
+            cv::Scalar(0,0,0),
+            true);
+        // Defining sizes
+        std::vector<int64_t> input_shape = {1, 3, 640, 640};
+        size_t input_tensor_size = 1 * 3 * 640 * 640;
+        // Finding RAM memory adress
+        auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        // CV -> Ort bridge
+        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+        memory_info, 
+        blob_prep.ptr<float>(), // Start adress
+        input_tensor_size, 
+        input_shape.data(), 
+        input_shape.size());
+
+        const char* input_names[] = {"images"};
+        const char* output_names[] = {"output0"};
+
+        try {
+            auto output_tensors = ort_session_->Run(
+                Ort::RunOptions{nullptr},
+                input_names,
+                &input_tensor,
+                1,
+                output_names,
+                1);
+
+        Ort::Value& output = output_tensors.front();
+        auto output_info = output.GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> output_shape = output_info.GetShape();
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Model otput shape: %ld, %ld, %ld",
+            output_shape[0],
+            output_shape[1],
+            output_shape[2]);
+
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "ONNX runtime error %s", e.what());
+        }
     }
 
     rcl_interfaces::msg::SetParametersResult parametersCallback(
@@ -248,6 +317,9 @@ public:
             log_cpu_.push_back(cpu_usage);
             log_ram_.push_back(ram_usage);
             log_fps_.push_back(fps);
+            if (elapsed_f >= this->get_parameter("benchmark_duration").as_double()){
+                rclcpp::shutdown();
+            }
         }
     }
 
