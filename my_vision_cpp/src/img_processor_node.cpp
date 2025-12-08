@@ -3,6 +3,8 @@
 #include <fstream>
 #include <chrono>
 #include <unistd.h>
+#include <numeric>
+
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
@@ -19,7 +21,7 @@
 class ImageProcessor : public rclcpp::Node
 {
 private:
-    
+    // Ros comunication interface
     rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr subscription_;
     rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr publisher_;
     // Parameters callback ptr
@@ -51,6 +53,13 @@ private:
     Ort::Env ort_env_;
     std::shared_ptr<Ort::Session> ort_session_;
     Ort::SessionOptions ort_session_options_;
+    std::vector<std::string> input_node_names_;
+    std::vector<std::vector<int64_t>> input_node_dims_;
+    std::vector<std::string> output_node_names_;
+    std::vector<std::vector<int64_t>> output_node_dims_;
+    size_t input_tensor_size_;
+    std::vector<const char*> input_names_;
+    std::vector<const char*> output_names_;
 
 
 void listener_callback(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
@@ -80,11 +89,14 @@ public:
     :   Node("image_processor"),
         // Setting up QoS policy for camera stream
         qos_policy_(rclcpp::QoS(1).best_effort().durability_volatile()),
+        // Benchmarking
         benchmark_last_frame_time_(std::chrono::steady_clock::now()),
         benchmark_running_(false),
         last_sys_time_(std::chrono::steady_clock::now()),
+        // Dynamic paths
         package_share_directory_(ament_index_cpp::get_package_share_directory("my_vision_cpp")),
         onnx_model_path_(package_share_directory_ + "/models/industrial_signs_yolo_nano_rev0.onnx"),
+        // Onnx evironment
         ort_env_(ORT_LOGGING_LEVEL_WARNING, "ONNX_yolo8n"),
         ort_session_(nullptr),
         ort_session_options_()
@@ -104,16 +116,25 @@ public:
         benchmark_start_ = this->get_parameter("benchmark_start").as_bool();
 
         // Loading neural net path to enviornment
-        ort_session_options_.SetInterOpNumThreads(1);
-        ort_session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
-        ort_session_ = std::make_shared<Ort::Session>(ort_env_, onnx_model_path_.c_str(), ort_session_options_);
+        try{
+            ort_session_options_.SetInterOpNumThreads(1);
+            ort_session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+            // Starting sesion
+            ort_session_ = std::make_shared<Ort::Session>(ort_env_, onnx_model_path_.c_str(), ort_session_options_);
+            onnx_init();
+            RCLCPP_INFO(this->get_logger(), "Successfully loaded ONNX model from: %s", onnx_model_path_.c_str());
+        } catch (const std::exception &e){
+            RCLCPP_ERROR(this->get_logger(), "FATAL ERROR: Could not load ONNX model. Check path! Error: %s", e.what());
+        }
+        
         
         // Registering the callback to handle dynamic parameter updates
         params_callback_handle_ = this->add_on_set_parameters_callback(
             std::bind(&ImageProcessor::parametersCallback,
             this,
             std::placeholders::_1));
-        
+
+        //Publisher/ subscriber declarations
         publisher_ = this->create_publisher<sensor_msgs::msg::CompressedImage>(
             "/camera/image_processed/compressed",
             qos_policy_);
@@ -123,7 +144,7 @@ public:
             qos_policy_,
             std::bind(&ImageProcessor::listener_callback, this, std::placeholders::_1));
     }
-
+    // Destructor instructions
     ~ImageProcessor(){
         if(!log_timestamps_.empty()){
             save_benchmark_data();
@@ -165,8 +186,9 @@ public:
             {return cv::contourArea(a) < cv::contourArea(b);});
             std::vector<cv::Point> biggest_contour = *max_countour_iterator;
             contours_to_draw.push_back(biggest_contour);
-            
-            cv::Point contour_centre;       // Finding mas centre of our countour
+
+            // Finding mas centre of our countour using static moments
+            cv::Point contour_centre;       
             cv::Moments moments = cv::moments(biggest_contour);
             if (moments.m00 > 0){
                 contour_centre.x = moments.m10/moments.m00;
@@ -177,8 +199,8 @@ public:
             }
             cv::Point centre_error(screen_centre.x-contour_centre.x, screen_centre.y-contour_centre.y);
             RCLCPP_INFO(this->get_logger(), "X error: %d, Y error: %d", centre_error.x, centre_error.y);
-
-            cv::circle(masked_image, contour_centre, 7, cv::Scalar(0,0,255), -1);   // Visualizing results
+            // Visualizing results
+            cv::circle(masked_image, contour_centre, 7, cv::Scalar(0,0,255), -1);   
             cv::line(masked_image, screen_centre, contour_centre, cv::Scalar(255,255,255),2);
             cv::drawContours(masked_image, contours_to_draw, -1, cv::Scalar(0, 255, 0), 2); 
         } 
@@ -186,6 +208,13 @@ public:
     }
 
     cv::Mat neural_net_onnx(cv::Mat & imported_image){
+          /**
+         * @brief Core function for onnx format neural network mode.
+         * * Performs all necesary manipulations and calculations to obtains and visualize results 
+         * of image precessing.
+         * @param imported_image Input video frame in BGR format (cv::Mat).
+         * @return Processed image with rectangle object detection boxes drawed.
+         */
         // Converting standard cv::Mat to 4-dimensional Mat with NCHW dimensions order
         cv::Mat blob_prep = cv::dnn::blobFromImage(
             imported_image,
@@ -193,32 +222,27 @@ public:
             cv::Size(cv::Point(640, 640)),
             cv::Scalar(0,0,0),
             true);
-        // Defining sizes
-        std::vector<int64_t> input_shape = {1, 3, 640, 640};
-        size_t input_tensor_size = 1 * 3 * 640 * 640;
+
         // Finding RAM memory adress
         auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-        // CV -> Ort bridge
+        // CV -> Ort, bridge
         Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
         memory_info, 
         blob_prep.ptr<float>(), // Start adress
-        input_tensor_size, 
-        input_shape.data(), 
-        input_shape.size());
-
-        const char* input_names[] = {"images"};
-        const char* output_names[] = {"output0"};
+        input_tensor_size_, 
+        input_node_dims_[0].data(), 
+        input_node_dims_[0].size());
 
         try {
-            auto output_tensors = ort_session_->Run(
+            auto output_tensor = ort_session_->Run(
                 Ort::RunOptions{nullptr},
-                input_names,
+                input_names_.data(),
                 &input_tensor,
-                1,
-                output_names,
-                1);
+                input_names_.size(),
+                output_names_.data(),
+                output_node_names_.size());
 
-        Ort::Value& output = output_tensors.front();
+        Ort::Value& output = output_tensor.front();
         auto output_info = output.GetTensorTypeAndShapeInfo();
         std::vector<int64_t> output_shape = output_info.GetShape();
 
@@ -232,6 +256,57 @@ public:
         } catch (const std::exception& e) {
             RCLCPP_ERROR(this->get_logger(), "ONNX runtime error %s", e.what());
         }
+        return imported_image;
+    }
+
+    void onnx_init(){
+        /**
+         * @brief Performs dynamic model parameters loading.
+         */
+        // Dynamic model data loading
+        // Creating memory allocator due to fact that onnx in build on C language.
+        OrtAllocator* allocator = Ort::AllocatorWithDefaultOptions();
+        for (int i = 0; i < ort_session_.get()->GetInputCount(); ++i){
+            Ort::AllocatedStringPtr ptr = ort_session_.get()->GetInputNameAllocated(i, allocator);    
+            input_node_names_.push_back(std::string(ptr.get()));
+
+            Ort::TypeInfo type_info = ort_session_->GetInputTypeInfo(i);
+            // GetInputTypeInfo method returns read-only file so it is neccesery to use ConstTensorTypeAndShape
+            Ort::ConstTensorTypeAndShapeInfo type_shape_info = type_info.GetTensorTypeAndShapeInfo();
+            std::vector<int64_t> current_shape = type_shape_info.GetShape();
+            input_node_dims_.push_back(current_shape);
+        }
+
+        for (int i = 0; i < ort_session_.get()->GetOutputCount(); ++i){
+            Ort::AllocatedStringPtr ptr = ort_session_.get()->GetOutputNameAllocated(i, allocator);
+            output_node_names_.push_back(std::string(ptr.get()));
+
+            Ort::TypeInfo type_info = ort_session_->GetOutputTypeInfo(i);
+            Ort::ConstTensorTypeAndShapeInfo type_shape_info = type_info.GetTensorTypeAndShapeInfo();
+            std::vector<int64_t> current_shape = type_shape_info.GetShape();
+            output_node_dims_.push_back(current_shape);
+        }
+       
+            input_tensor_size_ = std::accumulate(
+            input_node_dims_[0].begin(),
+            input_node_dims_[0].end(),
+            (size_t) 1,
+            [] (int64_t a, int64_t b){return a * b;});
+        
+        for (int i =0; i < input_node_names_.size(); ++i){
+            input_names_.push_back(input_node_names_[i].c_str());
+        }
+        for (int i=0; i < output_node_names_.size(); ++i){
+            output_names_.push_back(output_node_names_[i].c_str());
+        }
+    }
+
+    void onnx_draw_boundries(const std::vector<Ort::Value> & output_tensor, cv::Mat & imported_image){
+        const Ort::Value & output = output_tensor.front();
+        auto data = output.GetTensorData<float>();
+        auto type_size = output.GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> shape  = type_size.GetShape();
+        cv::Mat output_matrix(shape[1], shape[2], CV_32F, const_cast<float*>(data));
     }
 
     rcl_interfaces::msg::SetParametersResult parametersCallback(
@@ -416,4 +491,3 @@ int main(int argc, char* argv[])
     rclcpp::shutdown();
     return 0;
 }
-
