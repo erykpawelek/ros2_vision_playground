@@ -2,17 +2,19 @@
 
 A modular, high-performance computer vision node designed for **Raspberry Pi 5** running **Ubuntu 24.04** (Noble) and **ROS 2 Jazzy**.
 
-This project serves as a development platform for experimenting with real-time perception algorithms, sensor integration, and distributed system architecture. The goal is to create a robust "visual cortex" capable of analyzing the environment and generating high-level control signals (e.g., error vectors) for autonomous robot navigation.
+This project serves as a development platform for experimenting with real-time perception algorithms in **Python** and **C++**, sensor integration, and distributed system architecture. The goal is to create a robust "visual cortex" capable of analyzing the environment and generating high-level control signals (e.g., error vectors) for autonomous robot navigation.
 
 ## Key Features
 
-* **Dispatcher Architecture:** Enables dynamic run-time switching between processing algorithms (Classical CV vs. AI) via ROS parameters, ensuring zero downtime.
-* **Color Object Tracking:** Implements HSV thresholding, contour analysis, and moment-based centroid calculation for tracking.
-* **AI Hand Tracking:** Integrates Google MediaPipe for robust hand landmark detection using an asynchronous/synchronous pipeline.
-* **Custom Object Detection (YOLOv8):** Supports custom-trained neural networks for specialized industrial object recognition using the Ultralytics YOLOv8 architecture. Compatible with multiple inference backends (PyTorch, ONNX, NCNN) for optimized performance on ARM CPUs.
-* **Bandwidth Optimization:** Utilizes `sensor_msgs/CompressedImage` for transport to minimize Wi-Fi saturation and latency during remote debugging.
-* **Dynamic Reconfiguration:** Key parameters (e.g., HSV thresholds) can be tuned dynamically at runtime.
-* **Portable Design:** Uses dynamic path resolution (`ament_index_python`) for model files, ensuring the package runs on any machine without hardcoded paths.
+* **Dispatcher Architecture:** Enables dynamic run-time switching between processing algorithms (Classical CV vs. AI) via ROS parameters, ensuring zero downtime (C++ and Python releases).
+* **Color Object Tracking:** Implements HSV thresholding, contour analysis, and moment-based centroid calculation for tracking (C++, Python).
+* **AI Hand Tracking:** Integrates Google MediaPipe for robust hand landmark detection using an asynchronous/synchronous pipeline(Python).
+* **Custom Object Detection (YOLOv8):** Supports custom-trained neural networks for specialized industrial object recognition using the Ultralytics YOLOv8 architecture. Compatible with multiple inference backends (PyTorch, ONNX, NCNN fo Python and ONNX on C++) for optimized performance on ARM CPUs.
+* **Bandwidth Optimization:** Utilizes `sensor_msgs/CompressedImage` for transport to minimize Wi-Fi saturation and latency during remote debugging (Python - mediapipe).
+* **Dynamic Reconfiguration:** Key parameters (e.g., HSV thresholds) can be tuned dynamically at runtime (C++, Python).
+* **Portable Design:** Uses dynamic path resolution for model files, ensuring the package runs on any machine without hardcoded paths.
+
+## Part 1: Python Implementation & Analysis
 
 ## Engineering Challenge 1: Handling Asynchronous Inference Latency
 
@@ -37,30 +39,12 @@ To resolve this, a **Frame Decimation (Skipping)** logic was implemented at the 
 
 A secondary challenge involved maximizing the throughput of the custom object detection model `YOLOv8 Nano`.
 
-**The Problem:** Standard PyTorch inference (`.pt`) is optimized for NVIDIA GPUs and struggles with thread management on ARM CPUs, leading to inefficient core utilization (~65%) and low frame rates.
+**The Problem:** Standard PyTorch inference (`.pt`) is optimized for GPUs and struggles with thread management on ARM CPUs, leading to inefficient core utilization (~65%) and low frame rates.
 
 **The Solution:** Backend Benchmarking To identify the optimal runtime environment, three different model formats were evaluated on the live hardware.
 
-## Hardware & Prerequisites
 
-* **Hardware:** Raspberry Pi 5 (8GB RAM) + Raspberry Pi Camera Module 3 (CSI).
-* **OS:** Ubuntu 24.04 LTS (Noble Numbat).
-* **ROS Distro:** ROS 2 Jazzy Jalisco.
-
-> **Important:** Standard Ubuntu drivers do not support the RPi Camera Module 3 correctly out of the box. You MUST build the Raspberry Pi fork of `libcamera` from source. 
-> See my detailed guide here: **[Raspberry Pi 5 + Camera Module 3 Setup Guide](https://github.com/erykpawelek/libcamera_ros2_setup)**
-
-## Dependencies
-
-Ensure you have the following installed on your Raspberry Pi:
-
-```bash
-sudo apt install ros-jazzy-cv-bridge ros-jazzy-image-transport-plugins python3-opencv
-# Note: It is recommended to use a virtual environment for Python packages
-pip3 install mediapipe
-pip3 install ultralytics onnx onnxruntime ncnn --break-system-packages
-```
-## Architecture Notes & Experimental Branch
+## Architecture Notes & Experimental Branch (Python)
 
 During development, two different architectural approaches were tested to handle the AI inference load on the Raspberry Pi CPU.
 
@@ -124,3 +108,52 @@ During development, two different architectural approaches were tested to handle
 
 **System Headroom:**
 Running modern Convolutional Neural Networks (CNN) like YOLOv8 on a Raspberry Pi 5 CPU is possible but constrained by compute power (2-4 FPS). While NCNN offers the best CPU performance, achieving real-time control (>30 FPS) requires a dedicated hardware accelerator, such as the Raspberry Pi AI Kit (Hailo-8L). This will be the next step in the project development.
+
+## Part 2: C++ Implementation & Systems Programming:
+
+Transitioning the logic to C++ was driven by the need for deterministic memory management, lower overhead, and direct interaction with the Linux kernel for performance monitoring.
+
+## Engineering Challenge 3: Memory Safety in Dynamic Tensor Allocation
+
+Integrating **ONNX Runtime C++ API** presented a significant challenge regarding memory ownership and pointer stability compared to managed languages like Python.
+
+## The Problem: Vector Relocation & Dangling Pointers
+
+During the initialization of the ONNX session, the model's input/output node names must be extracted and passed to the `Run()` function as `const char*` arrays. A naive implementation involving `push_back` to a `std::vector<string>` while simultaneously storing `c_str()` pointers resulted in undefined behavior. As the vector grew and reallocated memory to maintain contiguity, previously stored pointers became invalid (dangling pointers), leading to runtime segmentation faults.
+
+## The solution: Two-Pass Initialization Strategy
+
+A robust initialization routine was implemented:
+
+* **1. Allocation Phase:** First, iterate through all model nodes to fully populate the `std::vector<std::string>` containers. This triggers all necessary heap allocations and movements.
+
+* **2. Pointer Extraction:** Only after the string vectors are stable and fully sized, a second pass extracts the `c_str()` pointers into a separate vector. This guarantees memory stability and safe API calls.
+
+## Engineering Challenge 4: Kernel-Level Benchmarking
+
+To rigorously validate the performance gains of C++, standard high-level profilers were insufficient. A custom, low-level benchmarking system was architected directly into the node.
+
+* **Linux Kernel Parsing (`/proc`):** instead of relying on external libraries, the node reads directly from the Linux pseudo-filesystem:
+    * **CPU Load:** Parses `/proc/self/stat` to calculate the delta of `utime` (user time) and `stime` (system time) against the system clock tick rate (`sysconf(_SC_CLK_TCK)`).
+    * **RAM Usage:** Parses `/proc/self/status`to extract `VmRSS` (Resident Set Size), providing accurate real-time telemetry of physical memory footprint.
+
+## Hardware & Prerequisites
+
+* **Hardware:** Raspberry Pi 5 (8GB RAM) + Raspberry Pi Camera Module 3 (CSI).
+* **OS:** Ubuntu 24.04 LTS (Noble Numbat).
+* **ROS Distro:** ROS 2 Jazzy Jalisco.
+
+> **Important:** Standard Ubuntu drivers do not support the RPi Camera Module 3 correctly out of the box. You MUST build the Raspberry Pi fork of `libcamera` from source. 
+> See my detailed guide here: **[Raspberry Pi 5 + Camera Module 3 Setup Guide](https://github.com/erykpawelek/libcamera_ros2_setup)**
+
+## Dependencies
+
+Ensure you have the following installed on your Raspberry Pi:
+
+```bash
+sudo apt install ros-jazzy-cv-bridge ros-jazzy-image-transport-plugins python3-opencv
+# Note: It is recommended to use a virtual environment for Python packages
+pip3 install mediapipe
+pip3 install ultralytics onnx onnxruntime ncnn --break-system-packages
+```
+
