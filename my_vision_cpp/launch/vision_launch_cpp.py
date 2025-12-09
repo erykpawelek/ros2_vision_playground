@@ -25,9 +25,12 @@ def generate_launch_description():
             name='camera',
             output='screen',
             emulate_tty=True,
+            arguments=['--ros-args', '--log-level', 'ERROR'],
             parameters=[
                 {
                 'camera_auto_detect' : True,
+                'camera' : '/base/axi/pcie@120000/rp1/i2c@88000/imx708@1a',
+                'format' : 'XRGB8888',
                 'width' : 1536,
                 'height' : 864,
                 'AfMode': 0,

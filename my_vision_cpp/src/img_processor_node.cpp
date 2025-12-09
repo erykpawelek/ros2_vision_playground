@@ -4,6 +4,8 @@
 #include <chrono>
 #include <unistd.h>
 #include <numeric>
+#include <vector>
+#include <algorithm>
 
 
 #include "rclcpp/rclcpp.hpp"
@@ -60,6 +62,7 @@ private:
     size_t input_tensor_size_;
     std::vector<const char*> input_names_;
     std::vector<const char*> output_names_;
+    
 
 
 void listener_callback(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
@@ -70,6 +73,8 @@ void listener_callback(const sensor_msgs::msg::CompressedImage::SharedPtr msg){
     // Mode selection
     if (mode_ == "color_rec"){
         output_image = color_rec(imported_image);
+    }else if (mode_ == "neural_net_onnx"){
+        output_image = neural_net_onnx(imported_image);
     }else{
         output_image = imported_image;
     }
@@ -95,7 +100,7 @@ public:
         last_sys_time_(std::chrono::steady_clock::now()),
         // Dynamic paths
         package_share_directory_(ament_index_cpp::get_package_share_directory("my_vision_cpp")),
-        onnx_model_path_(package_share_directory_ + "/models/industrial_signs_yolo_nano_rev0.onnx"),
+        onnx_model_path_(package_share_directory_ + "/models/industrial_signs_yolo_nano_rev21.onnx"),
         // Onnx evironment
         ort_env_(ORT_LOGGING_LEVEL_WARNING, "ONNX_yolo8n"),
         ort_session_(nullptr),
@@ -227,11 +232,11 @@ public:
         auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
         // CV -> Ort, bridge
         Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-        memory_info, 
-        blob_prep.ptr<float>(), // Start adress
-        input_tensor_size_, 
-        input_node_dims_[0].data(), 
-        input_node_dims_[0].size());
+            memory_info, 
+            blob_prep.ptr<float>(), // Start adress
+            input_tensor_size_, 
+            input_node_dims_[0].data(), 
+            input_node_dims_[0].size());
 
         try {
             auto output_tensor = ort_session_->Run(
@@ -242,17 +247,7 @@ public:
                 output_names_.data(),
                 output_node_names_.size());
 
-        Ort::Value& output = output_tensor.front();
-        auto output_info = output.GetTensorTypeAndShapeInfo();
-        std::vector<int64_t> output_shape = output_info.GetShape();
-
-        RCLCPP_INFO(
-            this->get_logger(),
-            "Model otput shape: %ld, %ld, %ld",
-            output_shape[0],
-            output_shape[1],
-            output_shape[2]);
-
+            imported_image = onnx_draw_boundries(output_tensor, imported_image);
         } catch (const std::exception& e) {
             RCLCPP_ERROR(this->get_logger(), "ONNX runtime error %s", e.what());
         }
@@ -266,7 +261,7 @@ public:
         // Dynamic model data loading
         // Creating memory allocator due to fact that onnx in build on C language.
         OrtAllocator* allocator = Ort::AllocatorWithDefaultOptions();
-        for (int i = 0; i < ort_session_.get()->GetInputCount(); ++i){
+        for (size_t i = 0; i < ort_session_.get()->GetInputCount(); ++i){
             Ort::AllocatedStringPtr ptr = ort_session_.get()->GetInputNameAllocated(i, allocator);    
             input_node_names_.push_back(std::string(ptr.get()));
 
@@ -277,7 +272,7 @@ public:
             input_node_dims_.push_back(current_shape);
         }
 
-        for (int i = 0; i < ort_session_.get()->GetOutputCount(); ++i){
+        for (size_t i = 0; i < ort_session_.get()->GetOutputCount(); ++i){
             Ort::AllocatedStringPtr ptr = ort_session_.get()->GetOutputNameAllocated(i, allocator);
             output_node_names_.push_back(std::string(ptr.get()));
 
@@ -293,20 +288,88 @@ public:
             (size_t) 1,
             [] (int64_t a, int64_t b){return a * b;});
         
-        for (int i =0; i < input_node_names_.size(); ++i){
+        for (size_t i =0; i < input_node_names_.size(); ++i){
             input_names_.push_back(input_node_names_[i].c_str());
         }
-        for (int i=0; i < output_node_names_.size(); ++i){
+        for (size_t i=0; i < output_node_names_.size(); ++i){
             output_names_.push_back(output_node_names_[i].c_str());
         }
+        // By deviding loops we avoid memory relocation while getting const char* for Run() function
     }
 
-    void onnx_draw_boundries(const std::vector<Ort::Value> & output_tensor, cv::Mat & imported_image){
+    cv::Mat onnx_draw_boundries(const std::vector<Ort::Value> & output_tensor, cv::Mat & imported_image){
+        // Obtaining ptr to first object in result structure
         const Ort::Value & output = output_tensor.front();
         auto data = output.GetTensorData<float>();
         auto type_size = output.GetTensorTypeAndShapeInfo();
         std::vector<int64_t> shape  = type_size.GetShape();
         cv::Mat output_matrix(shape[1], shape[2], CV_32F, const_cast<float*>(data));
+        // Transposing matrix for better handling of results
+        cv::Mat transposed = output_matrix.t();
+        // Recactor cooefficents to remap image from input ex. 640x640 to ex. 1920x1080
+        float model_heigh = static_cast<float>(input_node_dims_[0][2]);
+        float model_width = static_cast<float>(input_node_dims_[0][3]);
+        float x_factor = imported_image.cols / model_width;
+        float y_factor = imported_image.rows / model_heigh;
+
+        std::vector<cv::Rect> boxes;
+        std::vector<float> confidences;
+        std::vector<int> class_ids;
+        std::vector<int> indices;
+        float intersection_union = 0.6;
+        float coeficient_factor = 0.5;
+
+        for (int i = 0; i < transposed.rows; ++i){
+            // Due to row major convention we obtain here adress of desired row
+            float* row_ptr = transposed.ptr<float>(i);
+            // Finding max_class propability returnet by network 0, 1, 2, 3 positions are x, y, h, w
+            auto max_class_ptr = std::max_element(
+                row_ptr + 4,
+                row_ptr + transposed.cols);
+            // Finding max_class index
+            int max_class_id = std::distance(
+            row_ptr + 4,
+            max_class_ptr);
+            // Checking cenrtainity cofactor
+            float score = *max_class_ptr;
+            if (score > 0.5f){
+                float cx = row_ptr[0];
+                float cy = row_ptr[1];
+                float w = row_ptr[2];
+                float h = row_ptr[3];
+
+                int left = static_cast<int>((cx - 1.0/2.0 * w) * x_factor);
+                int top = static_cast<int>((cy - 1.0/2.0 * h) * y_factor);
+                int width = static_cast<int>(w * x_factor);
+                int height = static_cast<int>(h * y_factor);
+
+                boxes.push_back(cv::Rect(left, top, width, height));
+                confidences.push_back(score);
+                class_ids.push_back(max_class_id);
+            }
+        }
+        cv::dnn::NMSBoxes(boxes, confidences, coeficient_factor, intersection_union, indices);
+        for (int idx : indices) {
+            cv::Rect box = boxes[idx];
+            float confidence = confidences[idx];
+            u_int class_id = class_ids[idx];
+
+            cv::Scalar color = cv::Scalar(0, 255, 0);
+            cv::rectangle(imported_image, box, color, 2); 
+
+            std::string class_name = "Class ";
+            std::string label = class_name + std::to_string(class_id) + ": " + cv::format("%.2f", confidence);
+            
+            cv::rectangle(imported_image, box, color, 2);
+            cv::putText(
+                imported_image, 
+                label, 
+                cv::Point(box.x, box.y- 40),
+                cv::FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color);
+            }
+        return imported_image;
     }
 
     rcl_interfaces::msg::SetParametersResult parametersCallback(
@@ -351,7 +414,7 @@ public:
                 }
             }else if (param.get_name() == "mode"){
                 val_str = param.as_string();
-                if (val_str == "color_rec"){
+                if (val_str == "color_rec" || val_str == "neural_net_onnx"){
                     result.successful = true;
                     result.reason = "Success!";
                     this->mode_ = val_str;
