@@ -5,36 +5,49 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies
+# Finding packages
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(ament_index_cpp)
 
+# Finding external packages
 find_package(OpenCV REQUIRED)
-# Standard executable definition
-add_executable(img_processor_cpp src/img_processor_node.cpp)
-ament_target_dependencies(img_processor_cpp 
+
+# Finding localy installed library
+find_library(ONNXRUNTIME_LIB onnxruntime REQUIRED)
+
+# Defining library to build
+add_library(image_processor_lib src/image_processor.cpp)
+# Adding dependencies ROS2
+ament_target_dependencies(image_processor_lib
   "rclcpp"
   "sensor_msgs"
   "cv_bridge"
-  "ament_index_cpp")
+  "rcl_interfaces")
 
 # Show to compiler where are hedder files (.hpp) OpenCV
-target_include_directories(img_processor_cpp PRIVATE
+target_include_directories(image_processor_lib PRIVATE
   ${OpenCV_INCLUDE_DIRS})
-# Manual linking of external libraries
-target_link_libraries(img_processor_cpp
-  ${OpenCV_LIBS})
+# Manual linking ONNX and open CV
+target_link_libraries(image_processor_lib
+  ${OpenCV_LIBS}
+  ${ONNXRUNTIME_LIB})
 
-target_include_directories(img_processor_cpp PUBLIC
-  /usr/local/include/onnxruntime
+target_include_directories(image_processor_lib PUBLIC
+  include
   )
 
-target_link_libraries(img_processor_cpp 
-  /usr/local/lib/libonnxruntime.so
-  )
+target_include_directories(image_processor_lib PUBLIC
+  /usr/local/include/onnxruntime 
+)
+
+add_executable(image_processor_node src/main.cpp)
+ament_target_dependencies(image_processor_node 
+  "rclcpp"
+  "ament_index_cpp")
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -48,10 +61,18 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-# Telling where to place compiled files
-install(TARGETS
-  img_processor_cpp
+target_link_libraries(image_processor_node
+  image_processor_lib)
+
+install(TARGETS 
+  image_processor_node
+  image_processor_lib
   DESTINATION lib/${PROJECT_NAME})
+
+install(
+  DIRECTORY include/
+  DESTINATION share/${PROJECT_NAME}
+)
 
 install(
   DIRECTORY launch
