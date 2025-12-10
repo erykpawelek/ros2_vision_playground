@@ -58,13 +58,13 @@ During development, two different architectural approaches were tested to handle
 * Pros: Decouples camera acquisition from processing.
 * Cons: Introduced significant latency (~7s) on this hardware configuration due to internal buffering limitations (before frame skipping was implemented).
 
-## Benchmarking 
+## Benchmarking Python
 
-**Time series figures (Python):**
+**Time series figures:**
 
 ![Time series figures](images/time_series.png)
 
-**Averages figures (Python):**
+**Averages figures:**
 
 ![Average figures](images/averages.png)
 
@@ -136,6 +136,36 @@ To rigorously validate the performance gains of C++, standard high-level profile
 * **Linux Kernel Parsing (`/proc`):** instead of relying on external libraries, the node reads directly from the Linux pseudo-filesystem:
     * **CPU Load:** Parses `/proc/self/stat` to calculate the delta of `utime` (user time) and `stime` (system time) against the system clock tick rate (`sysconf(_SC_CLK_TCK)`).
     * **RAM Usage:** Parses `/proc/self/status`to extract `VmRSS` (Resident Set Size), providing accurate real-time telemetry of physical memory footprint.
+
+## Benchmarking C++
+
+**Time series figures:**
+
+![Time series figures](images/Time%20Series%20(C++%20Benchmarks).png)
+
+**Averages figures:**
+
+![Average figures](images/Averages%20(C++%20Benchmarks).png)
+
+**1. Color Filtration**
+* **Performance:** Excellent (~27.6 FPS). The algorithm nearly saturates the camera's hardware limit (30 FPS).
+* **Resource Usage:** Low CPU load (~118%).
+* **Conclusion:** Extremely efficient for deterministic tasks like line following or colored object tracking. The C++ implementation provides stable frame times with minimal jitter compared to the Python equivalent.
+
+**2. Neural Network - YOLOv8 Nano using ONNX Runtime/`.onnx`**
+* **Performance:** Critical saturation (~296%). Total system load peaked at 370%.
+* **Resource usage:** High, ~323%.
+* **Analysis:** As observed, the ONNX backend is not well-optimized for the Broadcom BCM2712 ARM architecture without hardware acceleration. The CPU lacks the raw floating-point (FP32) compute capability required for this model structure.
+* **Characteristics:** Unacceptable latency combined with complete resource exhaustion, leaving no headroom for other robot processes.
+
+## Comparative Analysis: C++ vs. Python
+
+The migration from Python to C++ revealed two critical insights regarding embedded robotics:
+
+* **1. Overhead Reduction:** For lightweight algorithms (Color Filtration), C++ offered better stability and lower per-frame overhead than Python. The explicit memory management eliminated the non-deterministic latency spikes caused by Python's Garbage Collector.
+* **2. The "Compute Wall":** For heavy AI inference (YOLO), the performance remained almost identical between C++ and Python (~2-3 FPS). This proves that the system is **Compute Bound**, not **I/O Bound** or **Language Bound**. Rewriting the code in C++ cannot overcome the physical lack of TOPS (Trillions of Operations Per Second) on the CPU.
+
+**Final Conclusion:** To achieve real-time autonomous navigation (>30 FPS) with Neural Networks on Raspberry Pi 5, software optimization is no longer sufficient. Hardware acceleration (e.g., **Hailo-8L NPU**) or extreme quantization (**INT8 via NCNN**) is required.
 
 ## Hardware & Prerequisites
 
