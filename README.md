@@ -4,6 +4,8 @@ A modular, high-performance computer vision node designed for **Raspberry Pi 5**
 
 This project serves as a development platform for experimenting with real-time perception algorithms in **Python** and **C++**, sensor integration, and distributed system architecture. The goal is to create a robust "visual cortex" capable of analyzing the environment and generating high-level control signals (e.g., error vectors) for autonomous robot navigation.
 
+![Collage](images/collage.png)
+
 ## Key Features
 
 * **Dispatcher Architecture:** Enables dynamic run-time switching between processing algorithms (Classical CV vs. AI) via ROS parameters, ensuring zero downtime (C++ and Python releases).
@@ -176,14 +178,4 @@ The migration from Python to C++ revealed two critical insights regarding embedd
 > **Important:** Standard Ubuntu drivers do not support the RPi Camera Module 3 correctly out of the box. You MUST build the Raspberry Pi fork of `libcamera` from source. 
 > See my detailed guide here: **[Raspberry Pi 5 + Camera Module 3 Setup Guide](https://github.com/erykpawelek/libcamera_ros2_setup)**
 
-## Dependencies
-
-Ensure you have the following installed on your Raspberry Pi:
-
-```bash
-sudo apt install ros-jazzy-cv-bridge ros-jazzy-image-transport-plugins python3-opencv
-# Note: It is recommended to use a virtual environment for Python packages
-pip3 install mediapipe
-pip3 install ultralytics onnx onnxruntime ncnn --break-system-packages
-```
 
